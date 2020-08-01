@@ -37,6 +37,7 @@ public class ItemServiceImpl implements ItemService
     @Autowired
     private PromoService promoService;
 
+
     private ItemDO convertItemDOFromItemModel(ItemModel itemModel)
     {
         if(itemModel == null)
@@ -125,7 +126,7 @@ public class ItemServiceImpl implements ItemService
         ItemModel itemModel = convertModelFromDataObject(itemDO,itemStockDO);
 
         // 获取活动商品信息
-        PromoModel promoModel = promoService.getPromoByItemId(itemModel.getId());
+         PromoModel promoModel = promoService.getPromoByItemId(itemModel.getId());
         if(promoModel != null && promoModel.getStatus() != 3)
         {
             itemModel.setPromoModel(promoModel);

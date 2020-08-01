@@ -39,7 +39,6 @@ public class UserController extends BaseController
     @Autowired
     private HttpServletRequest httpServletRequest;
 
-
     @Autowired
     private RedisTemplate redisTemplate;
 
