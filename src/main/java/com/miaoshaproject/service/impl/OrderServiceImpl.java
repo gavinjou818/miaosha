@@ -44,13 +44,17 @@ public class OrderServiceImpl implements OrderService
     public OrderModel createOrder(Integer userId, Integer itemId, Integer promoId, Integer amount) throws BusinessException {
 
         //1.校验下单状态，下单的商品是否存在，用户是否合法，购买数量是否正确
-        ItemModel itemModel = itemService.getItemById(itemId);
+//        ItemModel itemModel = itemService.getItemById(itemId);
+        ItemModel itemModel = itemService.getItemByIdInCache(itemId);
+
         if (itemModel == null) {
             throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR, "商品信息不存在");
         }
 
-        UserModel userModel = userService.getUserById(userId);
-        if (userModel == null) {
+//        UserModel userModel = userService.getUserById(userId);
+        UserModel userModel = userService.getUserByIdInCache(userId);
+        if (userModel == null)
+        {
             throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR, "用户信息不存在");
         }
 

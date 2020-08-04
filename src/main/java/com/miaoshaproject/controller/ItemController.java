@@ -6,6 +6,7 @@ import com.miaoshaproject.error.BusinessException;
 import com.miaoshaproject.reponse.CommonReturnType;
 import com.miaoshaproject.service.CacheService;
 import com.miaoshaproject.service.ItemService;
+import com.miaoshaproject.service.PromoService;
 import com.miaoshaproject.service.impl.ItemServiceImpl;
 import com.miaoshaproject.service.model.ItemModel;
 import org.joda.time.format.DateTimeFormat;
@@ -23,8 +24,7 @@ import java.util.stream.Collectors;
 @Controller("item")
 @RequestMapping("/item")
 @CrossOrigin(allowCredentials ="true",allowedHeaders = "*")
-public class ItemController extends BaseController
-{
+public class ItemController extends BaseController {
     @Autowired
     private ItemService itemService;
 
@@ -34,7 +34,10 @@ public class ItemController extends BaseController
     @Autowired
     private CacheService cacheService;
 
-    @RequestMapping(value = "/create",method = {RequestMethod.POST},consumes = {CONTENT_TYPE_FORMED})
+    @Autowired
+    private PromoService promoService;
+
+    @RequestMapping(value = "/create", method = {RequestMethod.POST}, consumes = {CONTENT_TYPE_FORMED})
     @ResponseBody
     public CommonReturnType createItem
             (
@@ -56,6 +59,13 @@ public class ItemController extends BaseController
         return CommonReturnType.create(itemVO);
     }
 
+    @RequestMapping(value = "/publishpromo", method = {RequestMethod.GET})
+    @ResponseBody
+    public CommonReturnType publishpromo(@RequestParam(name = "id") Integer id)
+    {
+        promoService.publishPromo(id);
+        return CommonReturnType.create(null);
+    }
 
     @RequestMapping(value = "/list",method = {RequestMethod.GET})
     @ResponseBody
