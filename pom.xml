@@ -35,6 +35,14 @@
       <version>3.7</version>
     </dependency>
 
+    <!-- https://mvnrepository.com/artifact/com.alibaba/fastjson -->
+    <dependency>
+      <groupId>com.alibaba</groupId>
+      <artifactId>fastjson</artifactId>
+      <version>1.2.29</version>
+    </dependency>
+
+
     <!-- https://mvnrepository.com/artifact/org.hibernate.validator/hibernate-validator -->
     <dependency>
       <groupId>org.hibernate.validator</groupId>
@@ -82,6 +90,11 @@
       <scope>test</scope>
     </dependency>
 
+    <dependency>
+      <groupId>org.apache.rocketmq</groupId>
+      <artifactId>rocketmq-client</artifactId>
+      <version>4.5.0</version>
+    </dependency>
 
     <dependency>
       <groupId>org.springframework.boot</groupId>

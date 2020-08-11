@@ -2,16 +2,23 @@ package com.miaoshaproject.service.impl;
 
 import com.miaoshaproject.dao.ItemDOMapper;
 import com.miaoshaproject.dao.ItemStockDOMapper;
+import com.miaoshaproject.dao.StockLogDOMapper;
 import com.miaoshaproject.dataobject.ItemDO;
 import com.miaoshaproject.dataobject.ItemStockDO;
+import com.miaoshaproject.dataobject.StockLogDO;
 import com.miaoshaproject.error.BusinessException;
 import com.miaoshaproject.error.EmBusinessError;
+import com.miaoshaproject.mq.MqProducer;
 import com.miaoshaproject.service.ItemService;
 import com.miaoshaproject.service.PromoService;
 import com.miaoshaproject.service.model.ItemModel;
 import com.miaoshaproject.service.model.PromoModel;
 import com.miaoshaproject.valtdator.ValidationResult;
 import com.miaoshaproject.valtdator.ValidatorImpl;
+import org.apache.rocketmq.client.exception.MQBrokerException;
+import org.apache.rocketmq.client.exception.MQClientException;
+import org.apache.rocketmq.client.producer.SendResult;
+import org.apache.rocketmq.remoting.exception.RemotingException;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.redis.core.RedisTemplate;
@@ -20,12 +27,16 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Service
 public class ItemServiceImpl implements ItemService
 {
+
+    @Autowired
+    private MqProducer mqProducer;
 
     @Autowired
     private ValidatorImpl validator;
@@ -41,6 +52,9 @@ public class ItemServiceImpl implements ItemService
 
     @Autowired
     private RedisTemplate redisTemplate;
+
+    @Autowired
+    StockLogDOMapper stockLogDOMapper;
 
     private ItemDO convertItemDOFromItemModel(ItemModel itemModel)
     {
@@ -117,7 +131,6 @@ public class ItemServiceImpl implements ItemService
     @Override
     public ItemModel getItemById(Integer id)
     {
-
         ItemDO itemDO = itemDOMapper.selectByPrimaryKey(id);
         if(itemDO == null)
         {
@@ -160,16 +173,39 @@ public class ItemServiceImpl implements ItemService
     {
 //        int affectedRow = itemStockDOMapper.decreaseStock(itemId,amount);
         long result = redisTemplate.opsForValue().increment("promo_item_stock_" + itemId,amount.intValue() * -1);
-        if(result >= 0)
+        if(result > 0)
         {
             // 更新库存成功
             return true;
         }
+        else if(result == 0)
+        {
+            //打上库存已售罄的标识
+            redisTemplate.opsForValue().set("promo_item_stock_invalid_"+itemId,"true");
+
+            return true;
+        }
         else
         {
+//            redisTemplate.opsForValue().increment("promo_item_stock_" + itemId,amount.intValue());
             // 更新库存失败
+            increaseStock(itemId,amount);
             return false;
         }
+    }
+
+    @Override
+    public boolean increaseStock(Integer itemId, Integer amount) throws BusinessException
+    {
+        redisTemplate.opsForValue().increment("promo_item_stock_" + itemId,amount.intValue());
+        return true;
+    }
+
+    @Override
+    public boolean asyncDecreaseStock(Integer itemId, Integer amount)
+    {
+        boolean mqResult= mqProducer.asyncReduceStock(itemId,amount);
+        return mqResult;
     }
 
     @Override
@@ -177,5 +213,21 @@ public class ItemServiceImpl implements ItemService
     public void increaseSales(Integer itemId, Integer amount) throws BusinessException
     {
         itemDOMapper.increaseSales(itemId,amount);
+    }
+
+    // 初始化对应的库存流水
+    @Override
+    @Transactional
+    public String initStockLog(Integer itemId, Integer amount)
+    {
+        StockLogDO stockLogDO = new StockLogDO();
+        stockLogDO.setItemId(itemId);
+        stockLogDO.setAmount(amount);
+        stockLogDO.setStockLogId(UUID.randomUUID().toString().replace("-",""));
+        stockLogDO.setStatus(1);
+
+        stockLogDOMapper.insertSelective(stockLogDO);
+
+        return stockLogDO.getStockLogId();
     }
 }
