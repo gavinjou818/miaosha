@@ -50,38 +50,44 @@ public class OrderServiceImpl implements OrderService
     @Transactional
     public OrderModel createOrder(Integer userId, Integer itemId, Integer promoId, Integer amount,String stockLogId) throws BusinessException {
 
-        //1.校验下单状态，下单的商品是否存在，用户是否合法，购买数量是否正确
-//        ItemModel itemModel = itemService.getItemById(itemId);
-        ItemModel itemModel = itemService.getItemByIdInCache(itemId);
 
+//        ItemModel itemModel = itemService.getItemById(itemId);
+
+        //1.校验下单状态，下单的商品是否存在，用户是否合法，购买数量是否正确
+        ItemModel itemModel = itemService.getItemByIdInCache(itemId);
         if (itemModel == null) {
             throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR, "商品信息不存在");
         }
+//
+////        UserModel userModel = userService.getUserById(userId);
+//        UserModel userModel = userService.getUserByIdInCache(userId);
+//        if (userModel == null)
+//        {
+//            throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR, "用户信息不存在");
+//        }
 
-//        UserModel userModel = userService.getUserById(userId);
-        UserModel userModel = userService.getUserByIdInCache(userId);
-        if (userModel == null)
-        {
-            throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR, "用户信息不存在");
+        if(amount <= 0 || amount > 99){
+            throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR,"数量信息不正确");
         }
+
+//        //校验活动信息
+//        if(promoId != null)
+//        {
+//            // 校验对应活动是否存在这个适用商品
+//            if(promoId.intValue() != itemModel.getPromoModel().getId())
+//            {
+//                throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR, "活动信息不正确");
+//            } //（2）校验活动是否正在进行中
+//            else if (itemModel.getPromoModel().getStatus().intValue() != 2) {
+//                throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR, "活动还未开始");
+//            }
+//        }
 
         //2.落单减库存
         boolean result = itemService.decreaseStock(itemId,amount);
         if(!result)
         {
             throw new BusinessException(EmBusinessError.STOCK_NOT_ENOUGH);
-        }
-
-        if(promoId != null)
-        {
-            // 校验对应活动是否存在这个适用商品
-            if(promoId.intValue() != itemModel.getPromoModel().getId())
-            {
-                throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR, "活动信息不正确");
-            }
-            else if (itemModel.getPromoModel().getStatus().intValue() != 2) {
-                throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR, "活动还未开始");
-            }
         }
 
         //3.订单入库
