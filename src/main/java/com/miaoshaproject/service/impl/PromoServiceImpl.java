@@ -2,6 +2,8 @@ package com.miaoshaproject.service.impl;
 
 import com.miaoshaproject.dao.PromoDOMapper;
 import com.miaoshaproject.dataobject.PromoDO;
+import com.miaoshaproject.error.BusinessException;
+import com.miaoshaproject.error.EmBusinessError;
 import com.miaoshaproject.service.ItemService;
 import com.miaoshaproject.service.PromoService;
 import com.miaoshaproject.service.UserService;
@@ -75,13 +77,21 @@ public class PromoServiceImpl implements PromoService
 
         ItemModel itemModel = itemService.getItemById(promoDO.getItemId());
 
-        //将库存同步到redis内
+        // 将库存同步到redis内
         redisTemplate.opsForValue().set("promo_item_stock_"+itemModel.getId(), itemModel.getStock());
+
+        // 将大闸的限制数字设到了redis内
+        redisTemplate.opsForValue().set("promo_door_count_" + promoId,itemModel.getStock().intValue() * 5);
     }
 
     @Override
     public String generateSecondKillToken(Integer promoId, Integer itemId, Integer userId)
     {
+        //判断是否库存已售罄，若对应的售罄key存在，则直接返回下单失败
+        if(redisTemplate.hasKey("promo_item_stock_invalid_"+itemId))
+        {
+            return null;
+        }
 
         PromoDO promoDO = promoDOMapper.selectByPrimaryKey(promoId);
 
@@ -120,6 +130,12 @@ public class PromoServiceImpl implements PromoService
         UserModel userModel = userService.getUserByIdInCache(userId);
         if(userModel == null)
         {
+            return null;
+        }
+
+        //获取秒杀大闸的count数量
+        long result = redisTemplate.opsForValue().increment("promo_door_count_"+promoId,-1);
+        if(result < 0){
             return null;
         }
 
