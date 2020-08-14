@@ -7,6 +7,9 @@ import org.joda.time.DateTime;
 
 import java.io.IOException;
 
+/**
+ * joda时间序列化方法
+ */
 public class JodaDateTimeJsonSerializer extends JsonSerializer<DateTime>
 {
 

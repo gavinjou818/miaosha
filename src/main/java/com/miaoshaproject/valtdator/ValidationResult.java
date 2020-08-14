@@ -11,7 +11,6 @@ public class ValidationResult
 
     private Map<String,String> errorMsgMap = new HashMap<>();
 
-
     public boolean isHasErrors() {
         return hasErrors;
     }
