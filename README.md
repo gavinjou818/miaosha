@@ -49,8 +49,7 @@
 # 未做任何优化前的TPS测试
 
 - 服务器配置
-  - 处理器和内存：1 vCPU 2 GiB
-  - 网络：1Mbps
+  - 处理器、内存、网络：1 vCPU 2 GiB、1Mbps
   - 线程组数：
     - 线程数：500
     - 循环次数：20
@@ -117,14 +116,87 @@ public class WebServerConfiguration implements WebServerFactoryCustomizer<Config
 
 - 部署
 
-  ```shell
-  #假设nginx_IP、miao1_IP、miao2_IP、mysql_IP代表不同的主机
-  #首先通过工程maven打包miaosha.jar，得到对应的jar
-  ```
-
+  - 假设`nginx_IP`、`miao1_IP`、`miao2_IP`、`mysql_IP`代表不同的主机。
+  
+  - 并在`nginx_IP`、`miao1_IP`、`miao2_IP`创建`/var/www`的目录。
+  
+- 通过maven打包`miaosha.jar`，并上传到`miao1_IP`、`miao2_IP`的`/var/www/miaosha`目录中。
+  
+  - 同时修改外置`application.properties`对应的`msyql`连接为`mysql_IP`。
+  
+    ```shell
+    # 修改数据连接
+    spring.datasource.url=jdbc:mysql://***.***.***.***(mysql_IP):3306/miaosha?useUnicode=true&characterEncoding=UTF-8
+    # 修改密码
+    spring.datasource.password=****
+    ```
+  
+  - 在`nginx_IP`安装`openresty`，同时将`html`的内容放到nginx的`html`目录下，并且解压`static.zip`，得到需要的静态文件资源，同时修改`conf/nginx.conf`文件，添加静态资源映射，这也是**动静分离优化**的操作的一种
+  
+    ```shell
+    # http下配置要代理的服务器
+    upstream backend_server{
+       server ***.***.***.***(miao1_IP) weight=1;
+       server ***.***.***.***(miao2_IP) weight=1;
+       keepalive 30; #长链接时间
+    }
+    # server下静态资源配置
+    location /resources/
+    {
+        alias /usr/local/openresty/nginx/html/resources/; #路径根据自己放的位置修改
+        index  index.html index.htm;
+    }
+    
+    # server下动态资源配置
+    location / {
+         # nginx处理的时候，会反向代理道对应的服务器上
+         proxy_pass http://backend_server;
+         #proxy_cache tmp_cache; # keys_zone 将这个作为这里的反向代理配置
+         #proxy_cache_key $uri;
+         #proxy_cache_valid 200 206 304 302 7d; #返回这些状态码的时候才缓存
+         #proxy_set_header Host $http_host:$proxy_port;
+         proxy_set_header Host $http_host;
+         proxy_set_header X-Real-IP $remote_addr; #真正的地址是远端的地址，否则会拿到的是nginx的地址
+         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for; #nginx作为代理服务器，转发了请求
+         proxy_http_version 1.1; #使用http1.1协议
+         proxy_set_header Connection ""; #默认使用keepalive
+    }
+    ```
+  
+  - 同时在`miao1_IP`，`miao2_IP`的外置`application.properties`可开启访问日志
+  
+    ```shell
+    #开启访问日志
+    server.tomcat.accesslog.enabled=true 
+    #日志存放的位置
+    server.tomcat.accesslog.directory=/var/www/miaosha/tomcat 
+    #日志记录的格式
+    server.tomcat.accesslog.pattern=%h %l %u %t "%r" %s %b %D 
+    ```
   
 
+- 服务器配置
 
+  - `nginx_IP`
+
+    - 处理器、内存、网络：1 vCPU 1 GiB、5Mbps
+
+  - `miao1_IP`、`miao2_IP`
+
+    - 处理器、内存、网络：1 vCPU 1 GiB、5Mbps
+
+  - `mysql_IP`
+
+    - 处理器、内存、网络：1 vCPU 2 GiB 、1Mbps
+
+  - 线程组
+
+    - 线程数：800
+    - 循环次数：20
+
+    ![](./images/screen/3.gif)
+
+从中可以看到，`tps`终于可以达道`845.4/sec`，但是最大得瓶颈还是在sql端，这个位置会很影响数据的传输。
 
 # 关键代码解释
 

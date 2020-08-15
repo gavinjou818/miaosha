@@ -44,7 +44,7 @@ jackson2JsonRedisSerializer.setObjectMapper(objectMapper);
 同时要创建编码器和解码器：
 
 ```java
-![3](C:\Users\83495\IdeaProjects\miaosha\images\3.png)![3](C:\Users\83495\IdeaProjects\miaosha\images\3.png)![3](C:\Users\83495\IdeaProjects\miaosha\images\3.png)/**
+/**
  * joda解序列化
  */
 public class JodaDateTimeJsonDeserializer extends JsonDeserializer<DateTime>
