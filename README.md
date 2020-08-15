@@ -7,7 +7,7 @@
   - 硬件部署及配置优化
     - 云端部署
       - tomcat容器参数优化
-      - 线程池优化
+      - keepalive优化
     - 分布式扩展
       - 水平扩展优化
       - 动静分离优化
@@ -59,7 +59,9 @@
 
 从图中可以看到，在500个线程数单机`tps`只有`219.3/sec`的吞吐量（这个吞吐量还会更低），同时已经出现请求错误的现象。
 
-# tomcat容器参数优化
+# 硬件部署及配置优化
+
+### tomcat容器参数优化
 
 修改应用中的`application.properties`
 
@@ -79,6 +81,50 @@ server.tomcat.min-spare-threads=100
 ![](./images/screen/2.gif)
 
 通过修改了配置之后，终于把错误率消灭掉，但是程序的`tps`仍然很低，只有`161.9/sec`。
+
+### keepalive优化
+
+为了能够将每次循环的请求不是立刻断开，而是沿用原来的tcp连接，可以在jmeter的请求中，打开`KeepAlive`配置。同时要注意过长的时间连接，所以服务端需要设置连接的最大请求数和不响应后多少秒断开keepalive连接，相应的代码如下：
+
+```java
+//当Spring容器内没有TomcatEmbeddedServletContainerFactory这个bean时，会吧此bean加载进spring容器中
+@Component
+public class WebServerConfiguration implements WebServerFactoryCustomizer<ConfigurableWebServerFactory>
+{
+    @Override
+    public void customize(ConfigurableWebServerFactory configurableWebServerFactory)     {
+        //使用对应工厂类提供给我们的接口定制化我们的tomcat connector
+        ((TomcatServletWebServerFactory)configurableWebServerFactory)
+                .addConnectorCustomizers(new TomcatConnectorCustomizer() {
+                    @Override
+                    public void customize(Connector connector) {
+
+                        Http11NioProtocol protocol = (Http11NioProtocol) connector.getProtocolHandler();
+                        //定制化keepalivetimeout,设置30秒内没有请求则服务端自动断开keepalive链接
+                        protocol.setKeepAliveTimeout(30000);
+                        //当客户端发送超过10000个请求则自动断开keepalive链接
+                        protocol.setMaxKeepAliveRequests(10000);
+
+                    }
+                });
+    }
+}
+```
+
+### 水平扩展优化
+
+![](./images/4.png)
+
+- 部署
+
+  ```shell
+  #假设nginx_IP、miao1_IP、miao2_IP、mysql_IP代表不同的主机
+  #首先通过工程maven打包miaosha.jar，得到对应的jar
+  ```
+
+  
+
+
 
 # 关键代码解释
 
