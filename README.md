@@ -62,7 +62,7 @@
 
 ### tomcat容器参数优化
 
-修改应用中的`application.properties`
+- 修改应用中的`application.properties`
 
 ```shell
 # 等待队列长度
@@ -112,7 +112,7 @@ public class WebServerConfiguration implements WebServerFactoryCustomizer<Config
 
 ### 水平扩展优化
 
-![](./images/4.png)
+![](./images/5.png)
 
 - 部署
 
@@ -197,6 +197,140 @@ public class WebServerConfiguration implements WebServerFactoryCustomizer<Config
     ![](./images/screen/3.gif)
 
 从中可以看到，`tps`终于可以达道`845.4/sec`，但是最大得瓶颈还是在sql端，这个位置会很影响数据的传输。
+
+# 查询优化
+
+### redis缓存优化
+
+![](./images/6.png)
+
+- 第一个优化方案，首先将商品信息，提到redis库中，尽量靠近上游。
+
+  ```java
+      @RequestMapping(value = "/get",method = {RequestMethod.GET})
+      @ResponseBody
+      public CommonReturnType getItem(@RequestParam(name = "id")Integer id)
+      {
+          // 先查询有没有对应商品的缓存
+          ItemModel itemModel = (ItemModel) redisTemplate.opsForValue().get("item_"+id);
+  
+          // 没有就查询数据库
+          if(itemModel == null){
+              itemModel = itemService.getItemById(id);
+              //设置 缓存置入 到redis内
+              redisTemplate.opsForValue().set("item_"+id,itemModel);
+              redisTemplate.expire("item_"+id,10, TimeUnit.MINUTES);
+          }
+  
+          ItemVO itemVO = convertVOFromModel(itemModel);
+  
+          return CommonReturnType.create(itemVO);
+  
+      }
+  ```
+
+- 线程组：
+
+  - 线程数：800
+
+  - 循环次数：20
+
+    ![](./images/screen/4.gif)
+
+加了redis缓存，但是效果还是部室特别明显，可能和网络关系等仍然有关，这次的优化的`tps`只有`835.6/sec`，相对于水平扩展，倒是没有错误率了，同时这里开始数据**不会保持一致性**了。
+
+### 本地缓存化
+
+- 第二个优化方案是使用guava进行本地缓存，将缓存提到jvm中，形成多级缓存。
+
+  ```java
+      //商品详情页浏览
+      @RequestMapping(value = "/get",method = {RequestMethod.GET})
+      @ResponseBody
+      public CommonReturnType getItem(@RequestParam(name = "id")Integer id){
+          ItemModel itemModel = null;
+  
+          //先取本地缓存
+          itemModel = (ItemModel) cacheService.getFromCommonCache("item_"+id);
+  
+          if(itemModel == null){
+              //根据商品的id到redis内获取
+              itemModel = (ItemModel) redisTemplate.opsForValue().get("item_"+id);
+  
+              //若redis内不存在对应的itemModel,则访问下游service
+              if(itemModel == null){
+                  itemModel = itemService.getItemById(id);
+                  //设置itemModel到redis内
+                  redisTemplate.opsForValue().set("item_"+id,itemModel);
+                  redisTemplate.expire("item_"+id,10, TimeUnit.MINUTES);
+              }
+              //填充本地缓存
+              cacheService.setCommonCache("item_"+id,itemModel);
+          }
+  
+          ItemVO itemVO = convertVOFromModel(itemModel);
+          return CommonReturnType.create(itemVO);
+      }
+  ```
+
+- 线程组：
+
+  - 线程数：800
+  - 循环次数：20
+
+  ![](./images/screen/5.gif)
+
+这次优化相对而言，又有一定得性能提升了，还是jvm本地缓存比较直接，`tps`达到了`851.4/sec`。
+
+### lua缓存优化
+
+![](./images/7.png)
+
+- 首先在`/usr/local/openresty/lua`的目录下编写`itemredis.lua`脚本，其实就是让nginx直接从redis获取结果，返回给前端
+
+  ```shell
+  # 首先从请求的link上获取参数
+  local args = ngx.req.get_uri_args()
+  # 获取对应的id参数
+  local id = args["id"]
+  # 引入redis的模块
+  local redis = require "resty.redis"
+  # 新建缓存
+  local cache = redis:new()
+  # 连接redis
+  local ok,err = cache:connect("***.***.***.***",6379)
+  # 如果有对应的缓存
+  local item_model = cache:get("item_"..id)
+  # 如果不存在，就请求
+  if item_model == ngx.null or item_model == nil then
+          # 缓存对应的对象
+          local resp = ngx.location.capture("/item/get?id="..id) 
+          # 得到相应
+          item_model = resp.body
+  end
+  # 返回对应的缓存结果
+  ngx.say(item_model)
+  ```
+
+- 配置`nginx.conf`
+
+  ```shell
+  location /luaitem/get{
+      default_type "application/json";
+      #需要在redis中添加这一行
+      content_by_lua_file ../lua/itemredis.lua;
+  }
+  ```
+
+- 线程组：
+
+  - 线程数：800
+
+  - 循环次数：20
+
+    ![](./images/screen/6.gif)
+
+果然，越靠近用户的上游，越容易达到一个好的峰值。这次的优化的`tps`简单冲破`959.8/sec`，这比路由过去服务器来得更加及时。
 
 # 关键代码解释
 
