@@ -46,6 +46,10 @@
 - util：验证码工具类
 - valtdator：返回前端页面
 
+# 数据库模型
+
+![](./images/10.png)
+
 # 未做任何优化前的TPS测试
 
 - 服务器配置
@@ -521,6 +525,8 @@ public CommonReturnType publishpromo(@RequestParam(name = "id")Integer id){
 
 ### 异步流程优化
 
+![](./images/9.png)
+
 使用异步化，就可以用消息队列，rocketmq就不说怎么安装了，最麻烦的是rocketmq，所以这里写入单机外部配置，否则没办法连上rocketmq：
 
 ```shell
@@ -825,7 +831,7 @@ public CommonReturnType publishpromo(@RequestParam(name = "id")Integer id){
         });
 ```
 
-所以，我们先把消息可以先发送到mq队列中，然后等待`transactionMQProducer`来异步的执行回调的`createOrder`：
+所以，我们先把消息可以先发送到mq队列中，然后等待`transactionMQProducer`来异步的执行回调的`OrderServiceImpl.createOrder`：
 
 ```java
     //事务型同步库存扣减消息
@@ -851,7 +857,7 @@ public CommonReturnType publishpromo(@RequestParam(name = "id")Integer id){
     }
 ```
 
-在`createOrder`中，我们就可以把mq消息提交给取消掉了，因为消息已经提交，只是等待`createOrder`事务的执行，但是这里其实仍然有个致命的问题，假如虽然`createOrder`执行成功了，但是突然断电，`producer`没来得及发送对`COMMIT_MESSAGE`，那么mq肯定会不断的回查信息，执行`checkLocalTransaction`方法。但是我们也不知道如何判断上次执行是否成功，因为根本没办法查到对应的流水状态，就不知道该返回什么信息给mq。所以，我们需要想一个办法，去处理`createOrder`中的一个执行过程的流水供状态查阅。
+在`OrderServiceImpl.createOrder`中，我们就可以把mq消息提交给取消掉了，因为消息已经提交，只是等待`createOrder`事务的执行，但是这里其实仍然有个致命的问题，假如虽然`OrderServiceImpl.createOrder`执行成功了，但是突然断电，`producer`没来得及发送对`COMMIT_MESSAGE`，那么mq肯定会不断的回查信息，执行`checkLocalTransaction`方法。但是我们也不知道如何判断上次执行是否成功，因为根本没办法查到对应的流水状态，就不知道该返回什么信息给mq。所以，我们需要想一个办法，去处理`OrderServiceImpl.createOrder`中的一个执行过程的流水供状态查阅。
 
 首先创建`StockLogDO`，用于记录每一笔订单状态：
 
@@ -868,7 +874,7 @@ public class StockLogDO {
 }
 ```
 
-所以在`createOrder`中，执行异步消息之前，我们先初始化对应的`StockLogDO`：
+所以在`OrderController.createOrder`中，执行异步消息之前，我们先初始化对应的`StockLogDO`：
 
 ```java
     public CommonReturnType createOrder(@RequestParam(name="itemId")Integer itemId,
@@ -887,7 +893,7 @@ public class StockLogDO {
     }
 ```
 
-得到了对应`stockLogId`，我们也要传到`producer`中，所以参数中，还要带上这个参数，因为是为了记录`createOrder`中状态：
+得到了对应`stockLogId`，我们也要传到`producer`中，所以参数中，还要带上这个参数，因为是为了记录`OrderServiceImpl.createOrder`中状态：
 
 ```java
     public OrderModel createOrder(Integer userId, Integer itemId, Integer promoId, Integer amount,String stockLogId) throws BusinessException {
@@ -1004,6 +1010,335 @@ public class StockLogDO {
 ```
 
 所以每当创建之前，我们都可以先从redis检查对应的标记，以避免对应的创建`StockLog`。
+
+# 过载保护优化
+
+### 令牌分离优化
+
+在上面流程中，我们的一些验证，每次都在`OrderServiceImpl.createOrder`时候创建，这样一来，一定程序上造成这个接口的冗余，同时为了能够削掉峰值，只允许有令牌的人购买商品，所以提出这种方案。
+
+首先先创建对应的生成令牌的函数，这时候可以把验证提到令牌生成中：
+
+```java
+    @Override
+    public String generateSecondKillToken(Integer promoId,Integer itemId,Integer userId) {
+
+        PromoDO promoDO = promoDOMapper.selectByPrimaryKey(promoId);
+
+        PromoModel promoModel = convertFromDataObject(promoDO);
+        if(promoModel == null){
+            return null;
+        }
+
+        // 判断item信息是否存在
+        ItemModel itemModel = itemService.getItemByIdInCache(itemId);
+        if(itemModel == null){
+            return null;
+        }
+        // 判断用户信息是否存在
+        UserModel userModel = userService.getUserByIdInCache(userId);
+        if(userModel == null){
+            return null;
+        }
+
+        // 判断当前时间是否秒杀活动即将开始或正在进行
+        if(promoModel.getStartDate().isAfterNow()){
+            promoModel.setStatus(1);
+        }else if(promoModel.getEndDate().isBeforeNow()){
+            promoModel.setStatus(3);
+        }else{
+            promoModel.setStatus(2);
+        }
+
+        // 判断活动是否正在进行
+        if(promoModel.getStatus().intValue() != 2){
+            return null;
+        }
+
+        // 生成token并且存入redis内并给一个5分钟的有效期
+        String token = UUID.randomUUID().toString().replace("-","");
+        // 包含了用户信息的token
+        redisTemplate.opsForValue().set("promo_token_"+promoId+"_userid_"+userId+"_itemid_"+itemId,token);
+        redisTemplate.expire("promo_token_"+promoId+"_userid_"+userId+"_itemid_"+itemId,5, TimeUnit.MINUTES);
+
+        return token;
+    }
+```
+
+同时在`controller`层提供接口，将令牌生成先给客户端：
+
+```java
+    //生成秒杀令牌
+    @RequestMapping(value = "/generatetoken",method = {RequestMethod.POST},consumes={CONTENT_TYPE_FORMED})
+    @ResponseBody
+    public CommonReturnType generatetoken(@RequestParam(name="itemId")Integer itemId,
+                                          @RequestParam(name="promoId")Integer promoId) throws BusinessException {
+        // 根据token获取用户信息
+        String token = httpServletRequest.getParameterMap().get("token")[0];
+        if(StringUtils.isEmpty(token)){
+            throw new BusinessException(EmBusinessError.USER_NOT_LOGIN,"用户还未登陆，不能下单");
+        }
+
+        //获取用户的登陆信息
+        UserModel userModel = (UserModel) redisTemplate.opsForValue().get(token);
+        if(userModel == null){
+            throw new BusinessException(EmBusinessError.USER_NOT_LOGIN,"用户还未登陆，不能下单");
+        }
+
+        // 获取秒杀访问令牌
+        String promoToken = promoService.generateSecondKillToken(promoId,itemId,userModel.getId());
+
+        if(promoToken == null){
+            throw new BusinessException(EmBusinessError.PARAMETER_VALIDATION_ERROR,"生成令牌失败");
+        }
+        //返回对应的结果
+        return CommonReturnType.create(promoToken);
+    }
+```
+
+接着，我们在`OrderController.createOrder`之前，把验证令牌：
+
+```java
+    public CommonReturnType createOrder(@RequestParam(name="itemId")Integer itemId,
+                                        @RequestParam(name="amount")Integer amount,
+                                        @RequestParam(name="promoId",required = false)Integer promoId,
+                                        @RequestParam(name="promoToken",required = false)String promoToken) throws BusinessException {
+         ...
+
+        //校验秒杀令牌是否正确
+        if(promoId != null){
+            String inRedisPromoToken = (String) redisTemplate.opsForValue().get("promo_token_"+promoId+"_userid_"+userModel.getId()+"_itemid_"+itemId);  
+            // 先检查redis是否存在令牌
+            if(inRedisPromoToken == null){
+                throw new BusinessException(EmBusinessError.PARAMETER_VALIDATION_ERROR,"秒杀令牌校验失败");
+            }
+            // 接着和redis的令牌对比          
+             if(!org.apache.commons.lang3.StringUtils.equals(promoToken,inRedisPromoToken)){
+                throw new BusinessException(EmBusinessError.PARAMETER_VALIDATION_ERROR,"秒杀令牌校验失败");
+            }
+        }
+
+        ...
+    }
+```
+
+这样，`OrderServiceImpl.createOrder`的时候，我们就可以把用户信息的检验，和活动的检验提前到生成令牌中，让`OrderServiceImpl.createOrder`更加简洁。但是其实个人感觉，接口多了，其实活动的验证，其实也增多了，只不过从业务逻辑上来讲，把这些无关业务提前，不失为一种好办法，同时令牌又可以提供灵活性，因为可以把风阔策略，和售罄前置到令牌发放时。
+
+### 闸门流量化
+
+但是其实这里也有个问题，秒杀令牌在活动开始的时候，就会无限制的生成，非常影响系统的性能。所以需要控制办法令牌的数量，控制大闸流量。
+
+首先，我们在活动发布之前，就设定最大的发放令牌个数，这里设置为活动存储的5倍：
+
+```java
+    @Override
+    public void publishPromo(Integer promoId) {
+
+         ...
+        //将大闸的限制数字设到redis内
+        redisTemplate.opsForValue().set("promo_door_count_"+promoId,itemModel.getStock().intValue() * 5);
+
+    }
+```
+
+然后在扣生成令牌的时候，我们来减去最大的发放令牌个数，同时真的还可以把验证库存是否售罄提前到这个位置上来：
+
+```java
+    @Override
+    public String generateSecondKillToken(Integer promoId,Integer itemId,Integer userId) {
+
+        // 判断是否库存已售罄，若对应的售罄key存在，则直接返回下单失败
+        if(redisTemplate.hasKey("promo_item_stock_invalid_"+itemId)){
+            return null;
+        }
+        ...
+
+        // 获取秒杀大闸的count数量
+        long result = redisTemplate.opsForValue().increment("promo_door_count_"+promoId,-1);
+        if(result < 0){
+            return null;
+        }
+        ...
+    }
+```
+
+这时削掉峰值的很直接的方法，但是也还是抵挡不住很大的流量，因为没办法抵住刷票的现象，还是有可能冲破局限。
+
+### 队列泄洪
+
+就是用排队的策略，来处理每个事务。也就是所有用户进入`OrderController.createOrder`后，我们不一定所有任务都开让线程直接执行，因为这步设置到事务操作，我们是否可以让所有任务排队？然后再执行对应的下单操作，队列一定程序比多线程要好，因为多线程太多线程切换，会导致很慢。实现的关键，可以创建线程池来执行：
+
+```java
+    @PostConstruct
+    public void init()
+    {
+        executorService = Executors.newFixedThreadPool(20);
+        ...
+    }
+
+    // 封装下单请求
+    @RequestMapping(value = "/createorder",method = {RequestMethod.POST},consumes = {CONTENT_TYPE_FORMED})
+    @ResponseBody
+    public CommonReturnType createOrder(@RequestParam(name = "itemId") Integer itemId,
+                                        @RequestParam(name = "amount") Integer amount,
+                                        @RequestParam(name = "promoId",required = false) Integer promoId,
+                                        @RequestParam(name = "promoToken",required = false) String promoToken
+                                                ) throws BusinessException {
+
+        ...
+        // 同步调用线程池的submit方法
+        // 拥塞窗口位20的等待队列，用来队列化泄洪
+        Future<Object> future = executorService.submit(new Callable<Object>() {
+
+            @Override
+            public Object call() throws Exception
+            {
+                // 加入库存流水init状态
+                String stockLogId = itemService.initStockLog(itemId,amount);
+
+                // 再去完成对应的下单事务型消息机制
+                if(!mqProducer.transactionAsyncReduceStock(userModel.getId(),promoId,itemId,amount,stockLogId))
+                {
+                    throw new BusinessException(EmBusinessError.UNKNOWN_ERROR,"下单失败");
+                }
+
+                return null;
+            }
+        });
+
+        try
+        {   // 得到任务执行完毕
+            future.get();
+        }
+        catch (InterruptedException e)
+        {
+            throw new BusinessException(EmBusinessError.UNKNOWN_ERROR);
+        }
+        catch (ExecutionException e)
+        {
+            throw new BusinessException(EmBusinessError.UNKNOWN_ERROR);
+        }
+
+        return CommonReturnType.create(null);
+    }
+```
+
+看，这样，我们把所有的任务交给`20`个线程处理，总比超级多线程执行要好得多。
+
+# 防刷限流
+
+### 验证码
+
+为了防止刷票的可能，我们可以强行在下单之前进行验证码验证，这样就避免了被刷爆（我感觉在秒杀场景下，这个方法真的不是很好的用户体验），首先创建验证码生成接口：
+
+```java
+    //生成验证码
+    @RequestMapping(value = "/generateverifycode",method = {RequestMethod.GET,RequestMethod.POST})
+    @ResponseBody
+    public void generateverifycode(HttpServletResponse response) throws BusinessException, IOException
+    {
+        // 检查用户登录的token
+        String token = httpServletRequest.getParameterMap().get("token")[0];
+        if(StringUtils.isEmpty(token))
+        {
+            throw new BusinessException(EmBusinessError.USER_NOT_LOGIN,"用户还未登陆，不能生成验证码");
+        }
+        // 检查用户信息
+        UserModel userModel = (UserModel) redisTemplate.opsForValue().get(token);
+        if(userModel == null)
+        {
+            throw new BusinessException(EmBusinessError.USER_NOT_LOGIN,"用户还未登陆，不能生成验证码");
+        }
+       // 生成验证码、图片
+        Map<String,Object> map = CodeUtil.generateCodeAndPic();
+        // 获取验证码，并存入redis中
+        redisTemplate.opsForValue().set("verify_code_" + userModel.getId(), map.get("code"));
+        redisTemplate.expire("verify_code_" + userModel.getId(),10,TimeUnit.MINUTES);
+        // 返回图片
+        ImageIO.write((RenderedImage) map.get("codePic"), "jpeg", response.getOutputStream());
+    }
+```
+
+所以在生成令牌时，我们先获取验证码，才允许下单：
+
+```java
+    //生成秒杀令牌
+    @RequestMapping(value = "/generatetoken",method = {RequestMethod.POST},consumes={CONTENT_TYPE_FORMED})
+    @ResponseBody
+    public CommonReturnType generatetoken(@RequestParam(name = "itemId")Integer itemId,
+                                          @RequestParam(name = "promoId")Integer promoId,
+                                          @RequestParam(name = "verifyCode") String verifyCode) throws BusinessException {
+
+        ...
+        // 通过verifycode验证验证码的有效性
+        String redisVerifyCode = (String) redisTemplate.opsForValue().get("verify_code_" + userModel.getId());
+        if(StringUtils.isEmpty(redisVerifyCode))
+        {
+            throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR,"请求非法");
+        }
+        if(!redisVerifyCode.equalsIgnoreCase(verifyCode))
+        {
+            throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR,"请求非法，验证码错误");
+        }
+
+        // 获取秒杀访问令牌
+        String promoToken = promoService.generateSecondKillToken(promoId,itemId,userModel.getId());
+
+        if(promoToken == null)
+        {
+            throw new BusinessException(EmBusinessError.PAPAMETER_VALIDATION_ERROR,"生成令牌失败");
+        }
+
+        //返回对应的结果
+        return CommonReturnType.create(promoToken);
+    }
+```
+
+说实话，这个用户体验简直0分。
+
+### 令牌桶限流
+
+这个方法有点像水流一样，能够控制每一秒的最大的并发量。就刚刚所说，虽然通过秒杀令牌，我们可以放出`item_stock*5`的流量控制，但是其实还是会对`OrderController.createOrder`有可能造成大流量影响，所以最好再次限制一下这个接口的流量，就是限制每秒进入的用户数，google已经提供接口实现令牌桶方法，所以可以直接调用：
+
+```java
+    @PostConstruct
+    public void init()
+    {
+        executorService = Executors.newFixedThreadPool(20);
+        orderCreateRateLimiter = RateLimiter.create(300); // 每秒限流 300个
+    }
+
+    // 封装下单请求
+    @RequestMapping(value = "/createorder",method = {RequestMethod.POST},consumes = {CONTENT_TYPE_FORMED})
+    @ResponseBody
+    public CommonReturnType createOrder(@RequestParam(name = "itemId") Integer itemId,
+                                        @RequestParam(name = "amount") Integer amount,
+                                        @RequestParam(name = "promoId",required = false) Integer promoId,
+                                        @RequestParam(name = "promoToken",required = false) String promoToken
+                                                ) throws BusinessException {
+
+        // 调用令牌桶算法，每秒限制300个用户使用接口
+        if(!orderCreateRateLimiter.tryAcquire())
+        {
+            throw new BusinessException(EmBusinessError.RATELIMIT);
+        }
+      
+        ...
+        return CommonReturnType.create(null);
+    }
+```
+
+加上验证码之后就不太好测，所以一定要先关闭验证码验证：
+
+- 线程组
+
+  - 线程数：400
+
+  - 循环次数：20
+
+    ![](./images/screen/11.gif)
+
+一直优化下来以后`tps`越发的慢，现在的性能只有`224.3/sec`，限流和削峰操作，都起了效果。
 
 # 关键代码解释
 
