@@ -240,7 +240,7 @@ public class WebServerConfiguration implements WebServerFactoryCustomizer<Config
 
     ![](./images/screen/4.gif)
 
-加了redis缓存，但是效果还是部室特别明显，可能和网络关系等仍然有关，这次的优化的`tps`只有`835.6/sec`，相对于水平扩展，倒是没有错误率了，同时这里开始数据**不会保持一致性**了。
+加了redis缓存，但是效果还不是特别明显，可能和网络关系等仍然有关，这次的优化的`tps`只有`835.6/sec`，相对于水平扩展，倒是没有错误率了，同时这里开始数据**不会保持一致性**了。
 
 ### 本地缓存化
 
@@ -337,7 +337,7 @@ public class WebServerConfiguration implements WebServerFactoryCustomizer<Config
 
 # 交易优化
 
-上面主要关注的是读的性能优化，这其实做了缓存之后，数据不会及时的与数据库同步。这时候的数据其实是伪数据，但是没关系，我觉得只要交易的情况下，不要出现超卖的现象，这些伪数据不会对现实有多大影响。再交易前，先测试未优化的代码：
+上面主要关注的是读的性能优化，这其实做了缓存之后，数据不会及时的与数据库同步。这时候的数据其实是伪数据，但是没关系，我觉得只要交易的情况下，不要出现超卖的现象，这些伪数据不会对现实有多大影响。在交易前，先测试未优化的代码：
 
 ![](./images/8.png)
 
@@ -411,7 +411,7 @@ public class WebServerConfiguration implements WebServerFactoryCustomizer<Config
 
     ![](./images/screen/7.gif)
 
-从结果上看，没优化之前，写入的效率还是停高的，`tps`居然能达到`699.1/sec`，可能还是云服务器的硬盘还是比较强的吧，否则为什么`4-5`次的sql查询并发这么高。。
+从结果上看，没优化之前，写入的效率还是挺高的，`tps`居然能达到`699.1/sec`，可能还是云服务器的硬盘还是比较强的吧，否则为什么`4-5`次的sql查询并发这么高。。
 
 ### 交易验证优化
 
@@ -464,7 +464,7 @@ public class WebServerConfiguration implements WebServerFactoryCustomizer<Config
 
     ![](./images/screen/8.gif)
 
-`tps`为`612.1/sec`，为什么性能怎么还下降了呢？感觉优化了个寂寞，其实理论上，应该性能是提升了，测试有点不到准。
+`tps`为`612.1/sec`，为什么性能怎么还下降了呢？感觉优化了个寂寞，其实理论上，应该性能是提升了，测试有点不准。
 
 ### 缓存库存优化
 
@@ -945,7 +945,7 @@ public class StockLogDO {
             }
 ```
 
-如果中途发生断电之类得问题，我们在mq回查机制得时候，完全可以通过`StockLog`来查看流水：
+如果中途遇到断电之类的问题，我们在mq回查机制的时候，完全可以通过`StockLog`来查看流水：
 
 ```java
             @Override
@@ -972,7 +972,7 @@ public class StockLogDO {
             }
 ```
 
-但是，这里其实还有问题的，假如redis成功，但是事务出现异常，这是回滚不了的，所以这里还有一些问题，起码不会出现超卖现象，这个还有待处理。
+但是，这里其实还有问题的，假如redis成功，但是事务出现异常，这是回滚不了的。所以这里还有一些问题，起码不会出现超卖现象，这个还有待处理。
 
 - 线程组
 
